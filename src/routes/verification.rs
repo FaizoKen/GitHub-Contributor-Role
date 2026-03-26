@@ -67,12 +67,17 @@ pub fn render_verify_page(base_url: &str) -> String {
         .divider {{ border: none; border-top: 1px solid #30363d; margin: 16px 0; }}
         .trust-note {{ font-size: 13px; color: #8b949e; background: #0d1117; border-left: 3px solid #58a6ff; padding: 10px 14px; border-radius: 0 6px 6px 0; margin: 10px 0; line-height: 1.6; }}
         .trust-note strong {{ color: #c9d1d9; }}
+        .btn-logout {{ background: transparent; color: #8b949e; border: 1px solid #30363d; padding: 5px 12px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit; transition: all .15s; }}
+        .btn-logout:hover {{ color: #f85149; border-color: #da3633; background: #da363322; }}
     </style>
 </head>
 <body>
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">
-        <h1 style="margin:0;">GitHub Roles</h1>
-        <span style="font-size:11px; color:#8b949e; background:#21262d; padding:2px 8px; border-radius:4px;">Powered by <a href="https://rolelogic.faizo.net" target="_blank" rel="noopener" style="color:#58a6ff; text-decoration:none;">RoleLogic</a></span>
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+            <h1 style="margin:0;">GitHub Roles</h1>
+            <span style="font-size:11px; color:#8b949e; background:#21262d; padding:2px 8px; border-radius:4px;">Powered by <a href="https://rolelogic.faizo.net" target="_blank" rel="noopener" style="color:#58a6ff; text-decoration:none;">RoleLogic</a></span>
+        </div>
+        <button id="logout-btn" class="btn-logout hidden" onclick="doLogout()">Logout</button>
     </div>
     <p class="subtitle">Link your Discord and GitHub accounts to automatically receive server roles based on your repository contributions.</p>
 
@@ -153,6 +158,7 @@ pub fn render_verify_page(base_url: &str) -> String {
     async function init() {{
         try {{
             const s = await api('GET', '/verify/status');
+            document.getElementById('logout-btn').classList.remove('hidden');
             if (s.github_username) {{
                 document.getElementById('linked-discord').textContent = s.display_name;
                 document.getElementById('linked-github').textContent = s.github_username;
@@ -167,13 +173,24 @@ pub fn render_verify_page(base_url: &str) -> String {
         }}
     }}
 
+    async function doLogout() {{
+        clearMsg();
+        try {{
+            await api('POST', '/verify/logout');
+            document.getElementById('logout-btn').classList.add('hidden');
+            showSection('login-section');
+            showMsg('Logged out.', 'success');
+        }} catch (e) {{ showMsg(e.message, 'error'); }}
+    }}
+
     async function doUnlink() {{
         clearMsg();
         if (!confirm('Unlink your account? You will lose all assigned roles.')) return;
         try {{
             await api('POST', '/verify/unlink');
-            document.getElementById('gh-discord').textContent = '';
-            showSection('login-section');
+            document.getElementById('gh-discord').textContent = document.getElementById('linked-discord').textContent;
+            document.getElementById('github-link').href = GITHUB_LOGIN_URL;
+            showSection('github-section');
             showMsg('Account unlinked.', 'success');
         }} catch (e) {{ showMsg(e.message, 'error'); }}
     }}
@@ -441,6 +458,12 @@ pub async fn github_callback(
     tracing::info!(discord_id, github_username, "Account linked");
 
     Ok((jar, Redirect::to(&format!("{}/verify", state.config.base_url))))
+}
+
+pub async fn logout(jar: CookieJar) -> (CookieJar, Json<Value>) {
+    let cookie = Cookie::build(SESSION_COOKIE).path("/");
+    let jar = jar.remove(cookie);
+    (jar, Json(json!({"success": true})))
 }
 
 pub async fn unlink(

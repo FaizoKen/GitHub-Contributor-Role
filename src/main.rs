@@ -97,6 +97,7 @@ async fn main() {
         .route("/verify/callback", get(routes::verification::callback))
         .route("/verify/status", get(routes::verification::status))
         .route("/verify/unlink", post(routes::verification::unlink))
+        .route("/verify/logout", post(routes::verification::logout))
         // GitHub OAuth
         .route(
             "/verify/github/login",
