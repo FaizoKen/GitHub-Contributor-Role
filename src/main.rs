@@ -27,7 +27,7 @@ pub struct AppState {
     pub config_sync_tx: mpsc::Sender<ConfigSyncEvent>,
     pub github_client: GitHubClient,
     pub rl_client: RoleLogicClient,
-    pub oauth_http: reqwest::Client,
+    pub http: reqwest::Client,
     pub verify_html: bytes::Bytes,
 }
 
@@ -54,10 +54,10 @@ async fn main() {
 
     let github_client = GitHubClient::new(&app_config.github_token);
     let rl_client = RoleLogicClient::new();
-    let oauth_http = reqwest::Client::builder()
+    let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
-        .expect("Failed to build OAuth HTTP client");
+        .expect("Failed to build HTTP client");
     let verify_html =
         bytes::Bytes::from(routes::verification::render_verify_page(&app_config.base_url));
 
@@ -68,7 +68,7 @@ async fn main() {
         config_sync_tx,
         github_client,
         rl_client,
-        oauth_http,
+        http,
         verify_html,
     });
 
@@ -82,34 +82,28 @@ async fn main() {
         config_sync_rx,
         Arc::clone(&state),
     ));
-    tokio::spawn(tasks::guild_refresh_worker::run(Arc::clone(&state)));
     tokio::spawn(tasks::cleanup_expired(Arc::clone(&state)));
 
     let app = Router::new()
-        // Plugin endpoints (called by RoleLogic)
-        .route("/register", post(routes::plugin::register))
-        .route("/config", get(routes::plugin::get_config))
-        .route("/config", post(routes::plugin::post_config))
-        .route("/config", delete(routes::plugin::delete_config))
-        // Verification endpoints (user-facing)
-        .route("/verify", get(routes::verification::verify_page))
-        .route("/verify/login", get(routes::verification::login))
-        .route("/verify/callback", get(routes::verification::callback))
-        .route("/verify/status", get(routes::verification::status))
-        .route("/verify/unlink", post(routes::verification::unlink))
-        .route("/verify/logout", post(routes::verification::logout))
-        // GitHub OAuth
-        .route(
-            "/verify/github/login",
-            get(routes::verification::github_login),
+        .nest("/github-contributor-role", Router::new()
+            // Plugin endpoints (called by RoleLogic)
+            .route("/register", post(routes::plugin::register))
+            .route("/config", get(routes::plugin::get_config))
+            .route("/config", post(routes::plugin::post_config))
+            .route("/config", delete(routes::plugin::delete_config))
+            // Verification endpoints (user-facing)
+            .route("/verify", get(routes::verification::verify_page))
+            .route("/verify/login", get(routes::verification::login))
+            .route("/verify/status", get(routes::verification::status))
+            .route("/verify/unlink", post(routes::verification::unlink))
+            .route("/verify/logout", post(routes::verification::logout))
+            // GitHub OAuth
+            .route("/verify/github/login", get(routes::verification::github_login))
+            .route("/verify/github/callback", get(routes::verification::github_callback))
+            // Health + static
+            .route("/favicon.ico", get(routes::health::favicon))
+            .route("/health", get(routes::health::health))
         )
-        .route(
-            "/verify/github/callback",
-            get(routes::verification::github_callback),
-        )
-        // Health + static
-        .route("/favicon.ico", get(routes::health::favicon))
-        .route("/health", get(routes::health::health))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
         .with_state(state);

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::Json;
 use axum_extra::extract::cookie::{Cookie, CookieJar};
@@ -10,15 +9,16 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::services::discord_oauth::{self, DiscordOAuth};
+use crate::services::github_oauth;
+use crate::services::session;
 use crate::services::sync::PlayerSyncEvent;
 use crate::AppState;
 
-const SESSION_COOKIE: &str = "gh_session";
+const SESSION_COOKIE: &str = "rl_session";
 
 fn get_session(jar: &CookieJar, secret: &str) -> Result<(String, String), AppError> {
     let cookie = jar.get(SESSION_COOKIE).ok_or(AppError::Unauthorized)?;
-    discord_oauth::verify_session(cookie.value(), secret).ok_or(AppError::Unauthorized)
+    session::verify_session(cookie.value(), secret).ok_or(AppError::Unauthorized)
 }
 
 pub fn render_verify_page(base_url: &str) -> String {
@@ -126,7 +126,7 @@ pub fn render_verify_page(base_url: &str) -> String {
     <noscript><p style="color:#f85149; margin-top:20px;">JavaScript is required.</p></noscript>
 
     <script>
-    const API = '';
+    const API = '{base_url}';
     const GITHUB_LOGIN_URL = API + '/verify/github/login';
 
     async function api(method, path, body) {{
@@ -210,25 +210,11 @@ pub async fn verify_page(State(state): State<Arc<AppState>>) -> impl IntoRespons
 }
 
 pub async fn login(State(state): State<Arc<AppState>>) -> Response {
-    let state_param: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
-
-    let expires = chrono::Utc::now() + chrono::Duration::minutes(10);
-
-    if let Err(e) = sqlx::query("INSERT INTO oauth_states (state, expires_at) VALUES ($1, $2)")
-        .bind(&state_param)
-        .bind(expires)
-        .execute(&state.pool)
-        .await
-    {
-        tracing::error!("Failed to store OAuth state: {e}");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
-    }
-
-    let url = DiscordOAuth::authorize_url(&state.config, &state_param);
+    let return_to = "/github-contributor-role/verify";
+    let url = format!(
+        "/auth/login?return_to={}",
+        urlencoding::encode(return_to),
+    );
     Redirect::temporary(&url).into_response()
 }
 
@@ -237,92 +223,6 @@ pub struct CallbackQuery {
     pub code: Option<String>,
     pub state: String,
     pub error: Option<String>,
-}
-
-pub async fn callback(
-    State(state): State<Arc<AppState>>,
-    jar: CookieJar,
-    Query(query): Query<CallbackQuery>,
-) -> Result<(CookieJar, Redirect), AppError> {
-    if query.error.is_some() || query.code.is_none() {
-        return Ok((jar, Redirect::to(&format!("{}/verify", state.config.base_url))));
-    }
-    let code = query.code.unwrap();
-
-    let valid = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM oauth_states WHERE state = $1 AND expires_at > now())",
-    )
-    .bind(&query.state)
-    .fetch_one(&state.pool)
-    .await
-    .unwrap_or(false);
-
-    if !valid {
-        return Err(AppError::BadRequest("Invalid or expired OAuth state".into()));
-    }
-
-    sqlx::query("DELETE FROM oauth_states WHERE state = $1")
-        .bind(&query.state)
-        .execute(&state.pool)
-        .await?;
-
-    let oauth = DiscordOAuth::with_client(state.oauth_http.clone());
-    let (access_token, refresh_token) = oauth.exchange_code(&state.config, &code).await?;
-    let (discord_id, display_name) = oauth.get_user(&access_token).await?;
-
-    if let Some(ref rt) = refresh_token {
-        let _ = sqlx::query(
-            "INSERT INTO discord_tokens (discord_id, refresh_token) VALUES ($1, $2) \
-             ON CONFLICT (discord_id) DO UPDATE SET refresh_token = $2",
-        )
-        .bind(&discord_id)
-        .bind(rt)
-        .execute(&state.pool)
-        .await;
-    }
-
-    match oauth.get_user_guilds(&access_token).await {
-        Ok(guilds) if !guilds.is_empty() => {
-            let guild_ids: Vec<&str> = guilds.iter().map(|(id, _)| id.as_str()).collect();
-            let guild_names: Vec<&str> = guilds.iter().map(|(_, name)| name.as_str()).collect();
-            let mut tx = state.pool.begin().await?;
-            sqlx::query("DELETE FROM user_guilds WHERE discord_id = $1")
-                .bind(&discord_id)
-                .execute(&mut *tx)
-                .await?;
-            sqlx::query(
-                "INSERT INTO user_guilds (discord_id, guild_id, guild_name, updated_at) \
-                 SELECT $1, UNNEST($2::text[]), UNNEST($3::text[]), now()",
-            )
-            .bind(&discord_id)
-            .bind(&guild_ids)
-            .bind(&guild_names)
-            .execute(&mut *tx)
-            .await?;
-            tx.commit().await?;
-            let _ = sqlx::query(
-                "UPDATE discord_tokens SET guilds_refreshed_at = now() WHERE discord_id = $1",
-            )
-            .bind(&discord_id)
-            .execute(&state.pool)
-            .await;
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::warn!(discord_id, "Failed to fetch user guilds: {e}");
-        }
-    }
-
-    let session_value =
-        discord_oauth::sign_session(&discord_id, &display_name, &state.config.session_secret);
-
-    let cookie = Cookie::build((SESSION_COOKIE, session_value))
-        .path("/")
-        .http_only(true)
-        .same_site(axum_extra::extract::cookie::SameSite::Lax)
-        .max_age(time::Duration::hours(1));
-
-    Ok((jar.add(cookie), Redirect::to(&format!("{}/verify", state.config.base_url))))
 }
 
 pub async fn status(
@@ -369,7 +269,7 @@ pub async fn github_login(
     .execute(&state.pool)
     .await?;
 
-    let url = discord_oauth::github_authorize_url(&state.config, &state_param);
+    let url = github_oauth::github_authorize_url(&state.config, &state_param);
     Ok(Redirect::temporary(&url).into_response())
 }
 
@@ -404,7 +304,7 @@ pub async fn github_callback(
         .await?;
 
     let (github_username, github_id) =
-        discord_oauth::github_exchange_code(&state.oauth_http, &state.config, &code).await?;
+        github_oauth::github_exchange_code(&state.http, &state.config, &code).await?;
 
     // Check if GitHub account is already linked to another Discord user
     let existing = sqlx::query_scalar::<_, String>(
