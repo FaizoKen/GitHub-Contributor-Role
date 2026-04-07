@@ -1,3 +1,4 @@
+pub mod auth_gateway;
 pub mod condition_eval;
 pub mod github;
 pub mod github_oauth;

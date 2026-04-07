@@ -5,9 +5,10 @@ use sqlx::PgPool;
 
 use crate::error::AppError;
 use crate::models::condition::{Condition, ConditionOperator};
+use crate::services::auth_gateway;
 use crate::services::condition_eval::evaluate_condition;
 use crate::services::github::ContributorStats;
-use crate::services::rolelogic::RoleLogicClient;
+use crate::AppState;
 
 #[derive(Debug, Clone)]
 pub enum PlayerSyncEvent {
@@ -25,9 +26,11 @@ pub struct ConfigSyncEvent {
 /// Sync roles for a single player across all guilds.
 pub async fn sync_for_player(
     discord_id: &str,
-    pool: &PgPool,
-    rl_client: &RoleLogicClient,
+    state: &AppState,
 ) -> Result<(), AppError> {
+    let pool = &state.pool;
+    let rl_client = &state.rl_client;
+
     // Get user's GitHub username
     let github_username = sqlx::query_scalar::<_, String>(
         "SELECT github_username FROM linked_accounts WHERE discord_id = $1",
@@ -40,14 +43,29 @@ pub async fn sync_for_player(
         return Ok(());
     };
 
+    // Ask the Auth Gateway which guilds this user is currently a member of.
+    // Replaces the old JOIN against the local `user_guilds` table — the
+    // gateway is the source of truth, kept fresh by its OAuth callback and
+    // guild_refresh_worker.
+    let guild_ids = auth_gateway::fetch_user_guild_ids(
+        &state.http,
+        &state.config.auth_gateway_url,
+        &state.config.internal_api_key,
+        discord_id,
+    )
+    .await?;
+
+    if guild_ids.is_empty() {
+        return Ok(());
+    }
+
     // Get role links for guilds this user is in
     let role_links = sqlx::query_as::<_, (String, String, String, sqlx::types::Json<Vec<Condition>>)>(
         "SELECT rl.guild_id, rl.role_id, rl.api_token, rl.conditions \
          FROM role_links rl \
-         JOIN user_guilds ug ON ug.guild_id = rl.guild_id \
-         WHERE ug.discord_id = $1",
+         WHERE rl.guild_id = ANY($1)",
     )
-    .bind(discord_id)
+    .bind(&guild_ids[..])
     .fetch_all(pool)
     .await?;
 
@@ -250,9 +268,11 @@ fn build_condition_where(conditions: &[Condition]) -> (String, Vec<ConditionBind
 pub async fn sync_for_role_link(
     guild_id: &str,
     role_id: &str,
-    pool: &PgPool,
-    rl_client: &RoleLogicClient,
+    state: &AppState,
 ) -> Result<(), AppError> {
+    let pool = &state.pool;
+    let rl_client = &state.rl_client;
+
     let link = sqlx::query_as::<_, (String, sqlx::types::Json<Vec<Condition>>)>(
         "SELECT api_token, conditions FROM role_links WHERE guild_id = $1 AND role_id = $2",
     )
@@ -270,30 +290,56 @@ pub async fn sync_for_role_link(
         .await
         .unwrap_or((0, 100));
 
+    // Ask the Auth Gateway for the current member list of this guild.
+    // Replaces the old JOIN against the local `user_guilds` table.
+    let member_ids = auth_gateway::fetch_guild_member_ids(
+        &state.http,
+        &state.config.auth_gateway_url,
+        &state.config.internal_api_key,
+        guild_id,
+    )
+    .await?;
+
+    if member_ids.is_empty() {
+        // No one in this guild (per the gateway) — clear the role and stop.
+        rl_client
+            .replace_users(guild_id, role_id, &[], &api_token)
+            .await?;
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM role_assignments WHERE guild_id = $1 AND role_id = $2")
+            .bind(guild_id)
+            .bind(role_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        return Ok(());
+    }
+
     let (where_clause, binds) = build_condition_where(&conditions);
 
-    let guild_bind_idx = binds.len() + 1;
+    let members_bind_idx = binds.len() + 1;
     let limit_bind_idx = binds.len() + 2;
     let query_str = format!(
         "SELECT la.discord_id \
          FROM repo_contributors rc \
          JOIN linked_accounts la ON LOWER(la.github_username) = LOWER(rc.github_username) \
-         JOIN user_guilds ug ON ug.discord_id = la.discord_id AND ug.guild_id = ${guild_bind_idx} \
-         WHERE {where_clause} \
+         WHERE la.discord_id = ANY(${members_bind_idx}::text[]) \
+           AND ({where_clause}) \
          ORDER BY la.linked_at ASC \
          LIMIT ${limit_bind_idx}",
     );
 
-    let qualifying_ids = exec_condition_query(&query_str, &binds, guild_id, user_limit, pool).await?;
+    let qualifying_ids =
+        exec_condition_query(&query_str, &binds, &member_ids, user_limit, pool).await?;
 
     if !qualifying_ids.is_empty() && qualifying_ids.len() == user_limit {
         let count_query = format!(
             "SELECT COUNT(*) FROM repo_contributors rc \
              JOIN linked_accounts la ON LOWER(la.github_username) = LOWER(rc.github_username) \
-             JOIN user_guilds ug ON ug.discord_id = la.discord_id AND ug.guild_id = ${guild_bind_idx} \
-             WHERE {where_clause}",
+             WHERE la.discord_id = ANY(${members_bind_idx}::text[]) \
+               AND ({where_clause})",
         );
-        let total: i64 = exec_condition_count(&count_query, &binds, guild_id, pool)
+        let total: i64 = exec_condition_count(&count_query, &binds, &member_ids, pool)
             .await
             .unwrap_or(qualifying_ids.len() as i64);
         if total as usize > user_limit {
@@ -331,10 +377,13 @@ pub async fn sync_for_role_link(
     Ok(())
 }
 
+/// Execute a dynamic condition query that returns discord_id strings.
+/// `member_ids` is bound as a `text[]` for the gateway-sourced guild
+/// membership filter (`WHERE la.discord_id = ANY($N::text[])`).
 async fn exec_condition_query(
     query: &str,
     binds: &[ConditionBind],
-    guild_id: &str,
+    member_ids: &[String],
     limit: usize,
     pool: &PgPool,
 ) -> Result<Vec<String>, AppError> {
@@ -345,7 +394,7 @@ async fn exec_condition_query(
             ConditionBind::Text(v) => q.bind(v),
         };
     }
-    q = q.bind(guild_id);
+    q = q.bind(member_ids);
     q = q.bind(limit as i64);
     Ok(q.fetch_all(pool).await?)
 }
@@ -353,7 +402,7 @@ async fn exec_condition_query(
 async fn exec_condition_count(
     query: &str,
     binds: &[ConditionBind],
-    guild_id: &str,
+    member_ids: &[String],
     pool: &PgPool,
 ) -> Result<i64, AppError> {
     let mut q = sqlx::query_scalar::<_, i64>(query);
@@ -363,16 +412,17 @@ async fn exec_condition_count(
             ConditionBind::Text(v) => q.bind(v),
         };
     }
-    q = q.bind(guild_id);
+    q = q.bind(member_ids);
     Ok(q.fetch_one(pool).await?)
 }
 
 /// Remove a user from all role assignments (after account unlink).
 pub async fn remove_all_assignments(
     discord_id: &str,
-    pool: &PgPool,
-    rl_client: &RoleLogicClient,
+    state: &AppState,
 ) -> Result<(), AppError> {
+    let pool = &state.pool;
+    let rl_client = &state.rl_client;
     let assignments = sqlx::query_as::<_, (String, String, String)>(
         "SELECT ra.guild_id, ra.role_id, rl.api_token \
          FROM role_assignments ra \
