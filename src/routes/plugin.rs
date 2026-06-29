@@ -45,7 +45,11 @@ pub async fn register(
     .execute(&state.pool)
     .await?;
 
-    tracing::info!(guild_id = body.guild_id, role_id = body.role_id, "Role link registered");
+    tracing::info!(
+        guild_id = body.guild_id,
+        role_id = body.role_id,
+        "Role link registered"
+    );
 
     Ok(Json(serde_json::json!({"success": true})))
 }
@@ -56,9 +60,13 @@ pub async fn get_config(
 ) -> Result<Json<Value>, AppError> {
     let token = extract_token(&headers)?;
 
-    let link = sqlx::query_as::<_, (String, sqlx::types::Json<Vec<crate::models::condition::Condition>>)>(
-        "SELECT guild_id, conditions FROM role_links WHERE api_token = $1",
-    )
+    let link = sqlx::query_as::<
+        _,
+        (
+            String,
+            sqlx::types::Json<Vec<crate::models::condition::Condition>>,
+        ),
+    >("SELECT guild_id, conditions FROM role_links WHERE api_token = $1")
     .bind(&token)
     .fetch_optional(&state.pool)
     .await?
@@ -119,15 +127,17 @@ pub async fn post_config(
 
     // Ensure the target repo is in repo_cache so refresh worker picks it up
     if let Some(c) = conditions.first() {
-        sqlx::query(
-            "INSERT INTO repo_cache (repo_full_name) VALUES ($1) ON CONFLICT DO NOTHING",
-        )
-        .bind(&c.repo)
-        .execute(&state.pool)
-        .await?;
+        sqlx::query("INSERT INTO repo_cache (repo_full_name) VALUES ($1) ON CONFLICT DO NOTHING")
+            .bind(&c.repo)
+            .execute(&state.pool)
+            .await?;
     }
 
-    tracing::info!(guild_id = body.guild_id, role_id = body.role_id, "Config updated");
+    tracing::info!(
+        guild_id = body.guild_id,
+        role_id = body.role_id,
+        "Config updated"
+    );
 
     let _ = state
         .config_sync_tx
@@ -166,7 +176,11 @@ pub async fn delete_config(
         return Err(AppError::Unauthorized);
     }
 
-    tracing::info!(guild_id = body.guild_id, role_id = body.role_id, "Role link deleted");
+    tracing::info!(
+        guild_id = body.guild_id,
+        role_id = body.role_id,
+        "Role link deleted"
+    );
 
     Ok(Json(serde_json::json!({"success": true})))
 }

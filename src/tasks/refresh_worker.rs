@@ -52,7 +52,8 @@ pub async fn run(state: Arc<AppState>) {
                 let next_fetch = chrono::Utc::now() + chrono::Duration::seconds(interval);
 
                 // Transaction: replace contributor data + update cache metadata
-                let result = update_repo_data(&state, &repo_full_name, &repo_data, next_fetch).await;
+                let result =
+                    update_repo_data(&state, &repo_full_name, &repo_data, next_fetch).await;
 
                 if let Err(e) = result {
                     tracing::error!(repo_full_name, "Failed to update repo data: {e}");
@@ -60,7 +61,12 @@ pub async fn run(state: Arc<AppState>) {
                 }
 
                 let contributor_count = repo_data.contributors.len();
-                tracing::debug!(repo_full_name, contributor_count, interval, "Repo data refreshed");
+                tracing::debug!(
+                    repo_full_name,
+                    contributor_count,
+                    interval,
+                    "Repo data refreshed"
+                );
 
                 // Trigger sync for all linked Discord users who are contributors
                 trigger_syncs_for_repo(&state, &repo_full_name).await;

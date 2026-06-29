@@ -45,8 +45,7 @@ impl AppConfig {
             session_secret: env::var("SESSION_SECRET").expect("SESSION_SECRET must be set"),
             base_url,
             listen_addr: env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string()),
-            github_client_id: env::var("GITHUB_CLIENT_ID")
-                .expect("GITHUB_CLIENT_ID must be set"),
+            github_client_id: env::var("GITHUB_CLIENT_ID").expect("GITHUB_CLIENT_ID must be set"),
             github_client_secret: env::var("GITHUB_CLIENT_SECRET")
                 .expect("GITHUB_CLIENT_SECRET must be set"),
             github_token: env::var("GITHUB_TOKEN").expect("GITHUB_TOKEN must be set"),

@@ -16,6 +16,9 @@ pub enum AppError {
     #[error("Role link not found on RoleLogic")]
     RoleLinkNotFound,
 
+    #[error("Role link is disabled on RoleLogic")]
+    RoleLinkDisabled,
+
     #[error("Role link user limit reached ({limit})")]
     UserLimitReached { limit: usize },
 
@@ -58,12 +61,14 @@ impl IntoResponse for AppError {
             AppError::GitHub(GitHubError::NotFound) => {
                 (StatusCode::NOT_FOUND, "GitHub repository or user not found")
             }
-            AppError::GitHub(GitHubError::RateLimited) => {
-                (StatusCode::TOO_MANY_REQUESTS, "GitHub API rate limited. Please try again later.")
-            }
-            AppError::GitHub(GitHubError::RepoTooLarge) => {
-                (StatusCode::BAD_REQUEST, "Repository has too many contributors (>500)")
-            }
+            AppError::GitHub(GitHubError::RateLimited) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "GitHub API rate limited. Please try again later.",
+            ),
+            AppError::GitHub(GitHubError::RepoTooLarge) => (
+                StatusCode::BAD_REQUEST,
+                "Repository has too many contributors (>500)",
+            ),
             AppError::GitHub(e) => {
                 tracing::error!("GitHub API error: {e}");
                 (StatusCode::BAD_GATEWAY, "Failed to fetch GitHub data")
@@ -73,12 +78,15 @@ impl IntoResponse for AppError {
                 (StatusCode::BAD_GATEWAY, "Failed to sync roles")
             }
             AppError::RoleLinkNotFound => (StatusCode::NOT_FOUND, "Role link not found"),
+            AppError::RoleLinkDisabled => (StatusCode::FORBIDDEN, "Role link is disabled"),
             AppError::UserLimitReached { limit } => {
                 tracing::warn!("Role link user limit reached: {limit}");
                 (StatusCode::FORBIDDEN, "Role link user limit reached")
             }
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.as_str()),
-            AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "Invalid or missing authorization"),
+            AppError::Unauthorized => {
+                (StatusCode::UNAUTHORIZED, "Invalid or missing authorization")
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.as_str()),
             AppError::Internal(e) => {
                 tracing::error!("Internal error: {e}");

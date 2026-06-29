@@ -334,10 +334,7 @@ pub async fn verify_page(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 pub async fn login(State(state): State<Arc<AppState>>) -> Response {
     let return_to = "/github-contributor-role/verify";
-    let url = format!(
-        "/auth/login?return_to={}",
-        urlencoding::encode(return_to),
-    );
+    let url = format!("/auth/login?return_to={}", urlencoding::encode(return_to),);
     Redirect::temporary(&url).into_response()
 }
 
@@ -383,14 +380,12 @@ pub async fn github_login(
 
     let expires = chrono::Utc::now() + chrono::Duration::minutes(10);
 
-    sqlx::query(
-        "INSERT INTO oauth_states (state, redirect_data, expires_at) VALUES ($1, $2, $3)",
-    )
-    .bind(&state_param)
-    .bind(serde_json::json!({"purpose": "github_link"}))
-    .bind(expires)
-    .execute(&state.pool)
-    .await?;
+    sqlx::query("INSERT INTO oauth_states (state, redirect_data, expires_at) VALUES ($1, $2, $3)")
+        .bind(&state_param)
+        .bind(serde_json::json!({"purpose": "github_link"}))
+        .bind(expires)
+        .execute(&state.pool)
+        .await?;
 
     let url = github_oauth::github_authorize_url(&state.config, &state_param);
     Ok(Redirect::temporary(&url).into_response())
@@ -405,7 +400,10 @@ pub async fn github_callback(
     let (discord_id, _) = get_session(&jar, &state.config.session_secret)?;
 
     if query.error.is_some() || query.code.is_none() {
-        return Ok((jar, Redirect::to(&format!("{}/verify", state.config.base_url))));
+        return Ok((
+            jar,
+            Redirect::to(&format!("{}/verify", state.config.base_url)),
+        ));
     }
     let code = query.code.unwrap();
 
@@ -418,7 +416,9 @@ pub async fn github_callback(
     .unwrap_or(false);
 
     if !valid {
-        return Err(AppError::BadRequest("Invalid or expired OAuth state".into()));
+        return Err(AppError::BadRequest(
+            "Invalid or expired OAuth state".into(),
+        ));
     }
 
     sqlx::query("DELETE FROM oauth_states WHERE state = $1")
@@ -480,7 +480,10 @@ pub async fn github_callback(
 
     tracing::info!(discord_id, github_username, "Account linked");
 
-    Ok((jar, Redirect::to(&format!("{}/verify", state.config.base_url))))
+    Ok((
+        jar,
+        Redirect::to(&format!("{}/verify", state.config.base_url)),
+    ))
 }
 
 pub async fn logout(jar: CookieJar) -> (CookieJar, Json<Value>) {

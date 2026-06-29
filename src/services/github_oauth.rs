@@ -47,7 +47,10 @@ pub async fn github_exchange_code(
 
     let user: GitHubUser = http
         .get("https://api.github.com/user")
-        .header("Authorization", format!("Bearer {}", token_resp.access_token))
+        .header(
+            "Authorization",
+            format!("Bearer {}", token_resp.access_token),
+        )
         .header("User-Agent", "GitHubContributorRoles/1.0")
         .send()
         .await

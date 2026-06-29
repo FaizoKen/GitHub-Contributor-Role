@@ -85,9 +85,8 @@ impl GitHubClient {
         repo_full_name: &str,
         contributors: &mut HashMap<String, ContributorStats>,
     ) -> Result<(), GitHubError> {
-        let mut url = format!(
-            "https://api.github.com/repos/{repo_full_name}/contributors?per_page=100"
-        );
+        let mut url =
+            format!("https://api.github.com/repos/{repo_full_name}/contributors?per_page=100");
 
         for _ in 0..5 {
             self.wait_for_permit().await;
@@ -113,18 +112,17 @@ impl GitHubClient {
 
             let items: Vec<serde_json::Value> = resp.json().await?;
             for item in &items {
-                if let (Some(login), Some(commits)) = (
-                    item["login"].as_str(),
-                    item["contributions"].as_i64(),
-                ) {
-                    let entry = contributors
-                        .entry(login.to_lowercase())
-                        .or_insert_with(|| ContributorStats {
+                if let (Some(login), Some(commits)) =
+                    (item["login"].as_str(), item["contributions"].as_i64())
+                {
+                    let entry = contributors.entry(login.to_lowercase()).or_insert_with(|| {
+                        ContributorStats {
                             commits: 0,
                             pull_requests: 0,
                             merged_prs: 0,
                             issues: 0,
-                        });
+                        }
+                    });
                     entry.commits = commits as i32;
                 }
             }
@@ -163,14 +161,14 @@ impl GitHubClient {
 
             for item in &items {
                 if let Some(login) = item["user"]["login"].as_str() {
-                    let entry = contributors
-                        .entry(login.to_lowercase())
-                        .or_insert_with(|| ContributorStats {
+                    let entry = contributors.entry(login.to_lowercase()).or_insert_with(|| {
+                        ContributorStats {
                             commits: 0,
                             pull_requests: 0,
                             merged_prs: 0,
                             issues: 0,
-                        });
+                        }
+                    });
                     entry.pull_requests += 1;
                     if item["merged_at"].is_string() {
                         entry.merged_prs += 1;
@@ -216,14 +214,14 @@ impl GitHubClient {
                 }
 
                 if let Some(login) = item["user"]["login"].as_str() {
-                    let entry = contributors
-                        .entry(login.to_lowercase())
-                        .or_insert_with(|| ContributorStats {
+                    let entry = contributors.entry(login.to_lowercase()).or_insert_with(|| {
+                        ContributorStats {
                             commits: 0,
                             pull_requests: 0,
                             merged_prs: 0,
                             issues: 0,
-                        });
+                        }
+                    });
                     entry.issues += 1;
                 }
             }

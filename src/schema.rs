@@ -228,10 +228,7 @@ pub fn parse_config(config: &HashMap<String, Value>) -> Result<Vec<Condition>, A
     }
 
     // Extract field
-    let field_key = config
-        .get("field")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let field_key = config.get("field").and_then(|v| v.as_str()).unwrap_or("");
 
     if field_key.is_empty() {
         return Err(AppError::BadRequest("Contribution type is required".into()));
